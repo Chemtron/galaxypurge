@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # GalaxyPurge — Samsung Galaxy Debloater & Privacy Hardener
-# https://github.com/populousvox/galaxypurge
+# https://github.com/Chemtron/galaxypurge
 #
 # Disables spyware, telemetry, bloatware, and OTA update services on
 # Samsung Galaxy devices via ADB. No root required.
@@ -397,7 +397,7 @@ list_category() {
 
 show_menu() {
     echo -e "${BOLD}GalaxyPurge — GalaxyPurge v${VERSION} — Samsung Galaxy Debloater & Privacy Hardener${RESET}"
-    echo -e "${DIM}https://github.com/populousvox/galaxypurge${RESET}"
+    echo -e "${DIM}https://github.com/Chemtron/galaxypurge${RESET}"
     echo ""
     echo "Select categories to disable (space-separated numbers, or 'a' for all):"
     echo ""

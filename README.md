@@ -55,7 +55,7 @@ This script disables them all with one command.
 
 ```bash
 # Clone
-git clone https://github.com/populousvox/galaxypurge.git
+git clone https://github.com/Chemtron/galaxypurge.git
 cd galaxypurge
 
 # Connect your phone via USB or wireless debugging
