@@ -50,6 +50,7 @@ This script disables them all with one command.
 - **USB Debugging** or **Wireless Debugging** enabled on your phone
   - Settings > Developer options > USB debugging (or Wireless debugging)
 - Works on **Linux, macOS, and Windows** (Git Bash / WSL)
+  - Requires **bash 4.3+** (uses associative arrays and namerefs). macOS ships bash 3.2 — install a newer one with `brew install bash`.
 
 ## Quick Start
 

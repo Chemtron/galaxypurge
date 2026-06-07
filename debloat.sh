@@ -25,9 +25,18 @@
 
 set -euo pipefail
 
+# Require bash 4.3+ (uses associative arrays and namerefs). macOS ships 3.2.
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+    echo "Error: GalaxyPurge requires bash 4.3 or newer (found ${BASH_VERSION})." >&2
+    echo "macOS ships bash 3.2 — install a newer bash:  brew install bash" >&2
+    exit 1
+fi
+
 VERSION="1.0.0"
 BACKUP_FILE="disabled_packages_$(date +%Y%m%d_%H%M%S).txt"
 UNDO_FILE="debloat_undo.sh"
+LOG_FILE="galaxypurge_$(date +%Y%m%d_%H%M%S).log"
+FAILED=0
 
 # Colors
 RED='\033[0;31m'
@@ -37,6 +46,11 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
+
+# Disable color codes when stdout is not a terminal (keeps logs/pipes clean).
+if [[ ! -t 1 ]]; then
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
+fi
 
 # ============================================================================
 # Package lists by category
@@ -218,7 +232,10 @@ SAMSUNG_BLOAT=(
     "com.samsung.android.game.gos|Game Optimizing Service"
     "com.samsung.android.game.gamehome|Game Home"
     "com.samsung.android.forest|Samsung Forest / Digital Wellbeing"
-    "com.samsung.android.lool|Samsung Members"
+    # com.samsung.android.lool is Samsung Device Care (NOT Samsung Members).
+    # DO NOT disable it: Device Care re-promotes apps out of Android's
+    # DISABLED_UNTIL_USED (enabled=4) state. Disabling it strands those apps
+    # so they crash on launch. Intentionally excluded.
     "com.samsung.android.app.dressroom|AR Zone / Dressroom"
     "com.samsung.android.app.sharelive|Share Live"
     "com.samsung.android.smartsuggestions|Smart Suggestions"
@@ -292,6 +309,11 @@ CATEGORIES=(
 # Functions
 # ============================================================================
 
+log() {
+    # Append a timestamped, color-free line to the run log.
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE"
+}
+
 check_adb() {
     if ! command -v adb &>/dev/null; then
         echo -e "${RED}Error: adb not found in PATH.${RESET}"
@@ -335,14 +357,16 @@ disable_package() {
     local label="${3:-}"
 
     # Check if package exists
-    if ! adb -s "$DEVICE" shell pm list packages 2>/dev/null | grep -q "^package:${pkg}$"; then
+    if ! adb -s "$DEVICE" shell pm list packages 2>/dev/null | tr -d '\r' | grep -q "^package:${pkg}$"; then
         echo -e "  ${DIM}[-] ${pkg} — not installed, skipping${RESET}"
+        log "SKIP ${pkg} — not installed"
         return
     fi
 
     # Check if already disabled
-    if adb -s "$DEVICE" shell pm list packages -d 2>/dev/null | grep -q "^package:${pkg}$"; then
+    if adb -s "$DEVICE" shell pm list packages -d 2>/dev/null | tr -d '\r' | grep -q "^package:${pkg}$"; then
         echo -e "  ${DIM}[x] ${pkg} — already disabled${RESET}"
+        log "SKIP ${pkg} — already disabled"
         return
     fi
 
@@ -355,10 +379,14 @@ disable_package() {
         echo -e "  ${GREEN}[X]${RESET} ${pkg}${tag}"
         echo -e "      ${DIM}${desc}${RESET}"
         echo "$pkg" >> "$BACKUP_FILE"
+        log "DISABLED ${pkg} — ${desc}"
     elif echo "$result" | grep -qi "protected\|SecurityException"; then
         echo -e "  ${YELLOW}[!] ${pkg} — protected, cannot disable${RESET}"
+        log "PROTECTED ${pkg} — could not disable"
     else
         echo -e "  ${RED}[E] ${pkg} — ${result}${RESET}"
+        log "ERROR ${pkg} — ${result}"
+        FAILED=$((FAILED + 1))
     fi
 }
 
@@ -368,8 +396,10 @@ enable_package() {
     result=$(adb -s "$DEVICE" shell "pm enable ${pkg}" 2>&1)
     if echo "$result" | grep -qi "enabled\|new state"; then
         echo -e "  ${GREEN}[+]${RESET} ${pkg} — re-enabled"
+        log "ENABLED ${pkg}"
     else
         echo -e "  ${DIM}[-]${RESET} ${pkg} — ${result}"
+        log "ENABLE-FAILED ${pkg} — ${result}"
     fi
 }
 
@@ -380,7 +410,7 @@ process_category() {
     for entry in "${pkgs[@]}"; do
         IFS='|' read -r pkg desc label <<< "$entry"
         disable_package "$pkg" "$desc" "$label"
-        ((count++))
+        count=$((count + 1))
     done
 }
 
@@ -408,7 +438,7 @@ show_menu() {
         local count=${#arr[@]}
         local spycount=0
         for entry in "${arr[@]}"; do
-            [[ "$entry" == *"|SPYWARE" ]] && ((spycount++))
+            [[ "$entry" == *"|SPYWARE" ]] && spycount=$((spycount + 1)) || true
         done
         local spylabel=""
         [[ $spycount -gt 0 ]] && spylabel=" ${RED}(${spycount} spyware)${RESET}"
@@ -438,7 +468,7 @@ count_spyware() {
         IFS='|' read -r varname _ _ <<< "${CATEGORIES[$i]}"
         local -n arr=$varname
         for entry in "${arr[@]}"; do
-            [[ "$entry" == *"|SPYWARE" ]] && ((total++))
+            [[ "$entry" == *"|SPYWARE" ]] && total=$((total + 1)) || true
         done
     done
     echo $total
@@ -496,9 +526,9 @@ run_undo() {
     echo ""
 
     # Look for backup files
-    local backups
-    backups=$(ls disabled_packages_*.txt 2>/dev/null || true)
-    if [[ -z "$backups" ]]; then
+    local backups=(disabled_packages_*.txt)
+    [[ -e "${backups[0]}" ]] || backups=()
+    if [[ ${#backups[@]} -eq 0 ]]; then
         echo -e "${YELLOW}No backup files found. Re-enabling ALL known packages from this script.${RESET}"
         echo ""
         for i in $(seq 1 ${#CATEGORIES[@]}); do
@@ -514,26 +544,25 @@ run_undo() {
     else
         echo "Found backup files:"
         local i=1
-        for f in $backups; do
+        for f in "${backups[@]}"; do
             local count
             count=$(wc -l < "$f")
             echo "  $i) $f ($count packages)"
-            ((i++))
+            i=$((i + 1))
         done
         echo ""
         echo -n "Enter number to restore (or 'a' for all backups): "
         read -r choice
 
         if [[ "$choice" == "a" ]]; then
-            for f in $backups; do
+            for f in "${backups[@]}"; do
                 echo -e "\n${BOLD}Restoring from ${f}...${RESET}"
                 while IFS= read -r pkg; do
                     [[ -n "$pkg" ]] && enable_package "$pkg"
                 done < "$f"
             done
         else
-            local target
-            target=$(echo "$backups" | sed -n "${choice}p")
+            local target="${backups[$((choice - 1))]:-}"
             if [[ -n "$target" ]]; then
                 echo -e "\n${BOLD}Restoring from ${target}...${RESET}"
                 while IFS= read -r pkg; do
@@ -566,7 +595,7 @@ run_list() {
         list_category "$varname"
         total=$((total + ${#arr[@]}))
         for entry in "${arr[@]}"; do
-            [[ "$entry" == *"|SPYWARE" ]] && ((spyware++))
+            [[ "$entry" == *"|SPYWARE" ]] && spyware=$((spyware + 1)) || true
         done
         echo ""
     done
@@ -574,6 +603,11 @@ run_list() {
 }
 
 lock_ota_settings() {
+    echo -e "${RED}${BOLD}WARNING:${RESET}${YELLOW} Disabling OTA blocks automatic OS and SECURITY"
+    echo -e "updates — your device will no longer receive Samsung/Google security"
+    echo -e "patches automatically. Re-enable later with: ./debloat.sh --undo${RESET}"
+    echo ""
+    log "OTA/security updates disabled via lock_ota_settings"
     echo -e "${BOLD}Locking OTA system settings...${RESET}"
     adb -s "$DEVICE" shell settings put global ota_disable_automatic_update 1 2>/dev/null
     adb -s "$DEVICE" shell settings put global galaxy_system_update_block 1 2>/dev/null
@@ -669,3 +703,7 @@ main() {
 }
 
 main "$@"
+
+[[ -f "$LOG_FILE" ]] && echo -e "${DIM}Run log: ${LOG_FILE}${RESET}"
+# Exit non-zero if any package failed to disable (useful for CI/automation).
+exit $(( FAILED > 0 ? 1 : 0 ))
